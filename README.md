@@ -30,8 +30,8 @@
 ### 1. 패키지 설치
 ```bash
 # 저장소 클론 및 이동
-git clone <YOUR_REPOSITORY_URL>
-cd motion_tracking
+git clone https://github.com/jimin-kr/jm_control.git
+cd jm_control
 
 # 의존성 설치
 pip install -r requirements.txt
