@@ -1,0 +1,7 @@
+# Dependencies for OpenArm Vision Tracking System
+pyrealsense2>=2.50.0
+opencv-contrib-python>=4.7.0.72
+mediapipe>=0.10.0
+pupil-apriltags>=1.0.4
+numpy>=1.22.0,<2.0.0
+scipy>=1.9.0
