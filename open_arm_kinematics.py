@@ -138,13 +138,15 @@ class OpenArm7DoFSolver:
         # q2 (Shoulder Pitch): elevation angle (Y axis is downward)
         q2_rad = math.asin(np.clip(-u_se[1], -1.0, 1.0))
         # q3 (Shoulder Roll): controlled directly by the Swivel Angle psi!
-        q3_rad = math.radians(swivel_angle_deg)
+        swivel_wrapped = (swivel_angle_deg + 180.0) % 360.0 - 180.0
+        q3_deg_raw = swivel_wrapped
         if arm_side == "left":
-            q3_rad = -q3_rad
+            q3_deg_raw = -q3_deg_raw
 
         q1_deg = math.degrees(q1_rad)
         q2_deg = math.degrees(q2_rad)
-        q3_deg = math.degrees(q3_rad)
+        q3_deg = q3_deg_raw
+        q3_rad = math.radians(q3_deg)
 
         # -------------------------------------------------------------
         # 3. Shoulder-Elbow Base Rotation Matrix R_se

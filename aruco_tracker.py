@@ -45,6 +45,16 @@ ARUCO_DICT_MAP = {
 }
 
 
+def detect_markers_compat(gray, adict, parameters):
+    if hasattr(cv2.aruco, "detectMarkers"):
+        return cv2.aruco.detectMarkers(gray, adict, parameters=parameters)
+    elif hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(adict, parameters)
+        return detector.detectMarkers(gray)
+    return [], None, []
+
+
+
 @dataclass
 class WristPose:
     """Structured 6-DoF Wrist Pose representation."""
@@ -311,10 +321,10 @@ class ArUcoTracker:
             for adict in dictionaries_to_try:
                 if adict is None:
                     continue
-                corners_list, ids, _ = cv2.aruco.detectMarkers(gray, adict, parameters=self.aruco_params)
+                corners_list, ids, _ = detect_markers_compat(gray, adict, parameters=self.aruco_params)
                 if ids is None or len(ids) == 0:
                     gray_clahe = self.clahe.apply(gray)
-                    corners_list, ids, _ = cv2.aruco.detectMarkers(gray_clahe, adict, parameters=self.aruco_params)
+                    corners_list, ids, _ = detect_markers_compat(gray_clahe, adict, parameters=self.aruco_params)
 
                 if ids is not None and len(ids) > 0:
                     ids_flat = ids.flatten()
