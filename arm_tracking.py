@@ -111,7 +111,8 @@ class ArmTrackingPipeline:
         enable_filtering: bool = True,
         filter_type: str = "one_euro",
         udp_port: Optional[int] = None,
-        log_file: Optional[str] = None
+        log_file: Optional[str] = None,
+        model_complexity: int = 1
     ):
         self.camera_width = camera_width
         self.camera_height = camera_height
@@ -122,6 +123,7 @@ class ArmTrackingPipeline:
         self.filter_type = filter_type
         self.udp_port = udp_port
         self.log_file = log_file
+        self.model_complexity = model_complexity
         self.log_fp = None
 
         if self.log_file:
@@ -169,14 +171,15 @@ class ArmTrackingPipeline:
         self.pose_tracker = MediaPipeArmTracker(
             arm_side=self.arm_side,
             min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_tracking_confidence=0.5,
+            model_complexity=getattr(self, "model_complexity", 1)
         )
 
         # 3. Initialize Filters
         self._init_filters()
 
         # 4. Initialize OpenArm 7-DoF Inverse Kinematics Solver
-        self.open_arm_solver = OpenArm7DoFSolver()
+        self.open_arm_solver = OpenArm7DoFSolver(arm_side=self.arm_side)
 
         self.frame_count = 0
         self.fps_display = 0.0
@@ -427,8 +430,13 @@ def main():
     parser.add_argument("--log-file", type=str, default=None,
                         help="Path to save telemetry JSONL logs")
     parser.add_argument("--headless", action="store_true", help="Run without OpenCV GUI window")
+    parser.add_argument("--fast", action="store_true", help="Use lightweight pose model (model_complexity=0) for 10x FPS boost")
+    parser.add_argument("--model-complexity", type=int, default=1, choices=[0, 1, 2],
+                        help="MediaPipe model complexity (0: Lite/Fast, 1: Full, 2: Heavy)")
 
     args = parser.parse_args()
+
+    model_comp = 0 if args.fast else args.model_complexity
 
     pipeline = ArmTrackingPipeline(
         camera_width=args.width,
@@ -444,7 +452,8 @@ def main():
         enable_filtering=not args.no_filter,
         filter_type=args.filter_type,
         udp_port=args.udp_port,
-        log_file=args.log_file
+        log_file=args.log_file,
+        model_complexity=model_comp
     )
 
     print("=================================================================")

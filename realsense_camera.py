@@ -158,7 +158,10 @@ class RealSenseCamera:
         if not self._is_running:
             return False, None, None, None
 
-        frames = self.pipeline.wait_for_frames(timeout_ms=5000)
+        try:
+            frames = self.pipeline.wait_for_frames(timeout_ms=50)
+        except Exception:
+            return False, None, None, None
         aligned_frames = self.align.process(frames)
 
         color_frame = aligned_frames.get_color_frame()

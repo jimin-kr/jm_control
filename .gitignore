@@ -28,6 +28,12 @@ wheels/
 *.jsonl
 trajectory_log.jsonl
 
+# External submodule / third-party repos
+robot_control-jazzy/
+
+# Large binary snapshots
+snapshot_*.png
+
 # IDE
 .vscode/
 .idea/

@@ -33,15 +33,33 @@ class JointLimits:
         return float(np.clip(val_deg, self.min_deg, self.max_deg))
 
 
-DEFAULT_JOINT_LIMITS = [
-    JointLimits(-160.0, 160.0), # J1: Shoulder Yaw
-    JointLimits(-110.0, 110.0), # J2: Shoulder Pitch
-    JointLimits(-170.0, 170.0), # J3: Shoulder Roll
-    JointLimits(0.0, 150.0),    # J4: Elbow Pitch (0 = straight, 150 = fully bent)
-    JointLimits(-170.0, 170.0), # J5: Wrist Roll
-    JointLimits(-90.0, 90.0),   # J6: Wrist Pitch
+DEFAULT_JOINT_LIMITS_RIGHT = [
+    JointLimits(-80.0, 200.0),  # J1: Shoulder Yaw (Right arm)
+    JointLimits(-100.0, 100.0), # J2: Shoulder Pitch
+    JointLimits(-90.0, 90.0),   # J3: Shoulder Roll
+    JointLimits(0.0, 140.0),    # J4: Elbow Pitch (0 = straight, 140 = max flexion)
+    JointLimits(-90.0, 90.0),   # J5: Wrist Roll
+    JointLimits(-45.0, 45.0),   # J6: Wrist Pitch
     JointLimits(-90.0, 90.0),   # J7: Wrist Yaw
 ]
+
+DEFAULT_JOINT_LIMITS_LEFT = [
+    JointLimits(-200.0, 80.0),  # J1: Shoulder Yaw (Left arm)
+    JointLimits(-100.0, 100.0), # J2: Shoulder Pitch
+    JointLimits(-90.0, 90.0),   # J3: Shoulder Roll
+    JointLimits(0.0, 140.0),    # J4: Elbow Pitch
+    JointLimits(-90.0, 90.0),   # J5: Wrist Roll
+    JointLimits(-45.0, 45.0),   # J6: Wrist Pitch
+    JointLimits(-90.0, 90.0),   # J7: Wrist Yaw
+]
+
+DEFAULT_JOINT_LIMITS = DEFAULT_JOINT_LIMITS_RIGHT
+
+
+def get_default_joint_limits(arm_side: str = "right") -> List[JointLimits]:
+    if str(arm_side).lower() == "left":
+        return DEFAULT_JOINT_LIMITS_LEFT
+    return DEFAULT_JOINT_LIMITS_RIGHT
 
 
 @dataclass
@@ -77,11 +95,13 @@ class OpenArm7DoFSolver:
         self,
         upper_arm_len_m: float = 0.28,
         forearm_len_m: float = 0.25,
-        joint_limits: Optional[List[JointLimits]] = None
+        joint_limits: Optional[List[JointLimits]] = None,
+        arm_side: str = "right"
     ):
         self.upper_arm_len = upper_arm_len_m
         self.forearm_len = forearm_len_m
-        self.joint_limits = joint_limits or DEFAULT_JOINT_LIMITS
+        self.arm_side = arm_side.lower()
+        self.joint_limits = joint_limits or get_default_joint_limits(self.arm_side)
         self.last_valid_q_deg = np.zeros(7, dtype=np.float64)
 
     def solve_from_joints_and_orientation(
@@ -131,16 +151,20 @@ class OpenArm7DoFSolver:
         # -------------------------------------------------------------
         # 2. J1, J2, J3: Shoulder Spherical Joint (Yaw, Pitch, Roll)
         # -------------------------------------------------------------
-        # In Camera Coordinate Frame: X=right, Y=down, Z=forward
-        # When facing camera:
-        # q1 (Shoulder Yaw): azimuth angle of upper arm
-        q1_rad = math.atan2(u_se[0], u_se[2])
-        # q2 (Shoulder Pitch): elevation angle (Y axis is downward)
-        q2_rad = math.asin(np.clip(-u_se[1], -1.0, 1.0))
-        # q3 (Shoulder Roll): controlled directly by the Swivel Angle psi!
+        # In Camera Coordinate Frame: X=right, Y=down (gravity), Z=forward
+        # OpenArm URDF Zero Convention: All joints = 0° when arm hangs straight down facing forward.
+        # u_se = [x, y, z] (normalized upper arm vector)
+        # OpenArm URDF: Raising arm forward requires negative pitch angle
+        q1_rad = math.atan2(u_se[0], u_se[1]) # Shoulder Yaw (0° when hanging down)
+        q2_rad = -math.atan2(u_se[2], u_se[1]) # Shoulder Pitch (0° when hanging down, negative when raised forward)
+
+        # Swivel angle mapping
         swivel_wrapped = (swivel_angle_deg + 180.0) % 360.0 - 180.0
         q3_deg_raw = swivel_wrapped
-        if arm_side == "left":
+
+        # OpenArm URDF Left/Right Arm Kinematic Mirror Symmetry Alignment
+        if arm_side == "right":
+            q1_rad = -q1_rad
             q3_deg_raw = -q3_deg_raw
 
         q1_deg = math.degrees(q1_rad)

@@ -35,17 +35,21 @@ class GeometricFabricSafetyFilter:
     """
     def __init__(self, num_joints=7, limits_deg=None, arm_side="right"):
         self.num_joints = num_joints
-        self.arm_side = arm_side
-        # Default OpenArm 7-DoF limits
-        self.limits_deg = limits_deg or [
-            (-160.0, 160.0), # J1: Shoulder Yaw
-            (-110.0, 110.0), # J2: Shoulder Pitch
-            (-170.0, 170.0), # J3: Shoulder Roll
-            (0.0, 150.0),    # J4: Elbow Pitch
-            (-170.0, 170.0), # J5: Wrist Roll
-            (-90.0, 90.0),   # J6: Wrist Pitch
-            (-90.0, 90.0),   # J7: Wrist Yaw
-        ]
+        self.arm_side = arm_side.lower()
+        # Official OpenArm 7-DoF URDF joint limits (robot_control-jazzy)
+        if limits_deg is None:
+            j1_limits = (-200.0, 80.0) if self.arm_side == "left" else (-80.0, 200.0)
+            self.limits_deg = [
+                j1_limits,       # J1: Shoulder Yaw
+                (-100.0, 100.0), # J2: Shoulder Pitch
+                (-90.0, 90.0),   # J3: Shoulder Roll
+                (0.0, 140.0),    # J4: Elbow Pitch
+                (-90.0, 90.0),   # J5: Wrist Roll
+                (-45.0, 45.0),   # J6: Wrist Pitch
+                (-90.0, 90.0),   # J7: Wrist Yaw
+            ]
+        else:
+            self.limits_deg = limits_deg
         self.q_filtered_deg = np.zeros(num_joints, dtype=np.float64)
         self.dq_filtered_deg = np.zeros(num_joints, dtype=np.float64)
         self.alpha = 0.35  # Smoothing factor
@@ -125,11 +129,26 @@ def main():
     parser.add_argument("--port", type=int, default=9870, help="UDP Listening Port")
     parser.add_argument("--topic", type=str, default="/joint_states", help="ROS 2 JointState topic name")
     parser.add_argument("--arm", type=str, default="right", choices=["right", "left"], help="Arm side (right or left)")
+    parser.add_argument("--ready-pose", type=str, default="0.0,0.2,0.0,0.6,0.0,0.0,0.0",
+                        help="Default OpenArm Ready Pose in radians (e.g. '0,0.2,0,0.6,0,0,0')")
+    parser.add_argument("--relative", action="store_true", help="Use relative displacement mode instead of default absolute 1:1 mapping")
+    parser.add_argument("--pitch-offset", type=float, default=0.0, help="Additional shoulder pitch offset angle in degrees (e.g. -10.0 to lower height)")
+    parser.add_argument("--flip-pitch", action="store_true", help="Invert Shoulder Pitch (J2) direction sign if arm moves backward")
     args = parser.parse_args()
 
     if not ROS2_AVAILABLE:
         print("[ERROR] rclpy / sensor_msgs is not installed in current Python environment.")
         sys.exit(1)
+
+    # Parse Ready Pose in Radians -> Convert to Degrees
+    try:
+        ready_pose_rad = [float(x.strip()) for x in args.ready_pose.split(",")]
+        if len(ready_pose_rad) < 7:
+            ready_pose_rad = [0.0, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+    except Exception:
+        ready_pose_rad = [0.0, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+    
+    ready_pose_deg = np.degrees(np.array(ready_pose_rad[:7], dtype=np.float64))
 
     # Initialize ROS 2
     rclpy.init()
@@ -153,34 +172,84 @@ def main():
         "openarm_right_finger_joint1", "openarm_right_finger_joint2"
     ]
 
+    use_absolute = not args.relative
+
     print("=================================================================")
     print("      OpenArm 7-DoF ROS 2 / RViz Teleoperation Bridge           ")
     print(f"      UDP Listening : {args.ip}:{args.port}")
     print(f"      Target Arm    : {args.arm.upper()}")
+    print(f"      Control Mode  : {'1:1 ABSOLUTE DIRECT POSE' if use_absolute else 'RELATIVE DISPLACEMENT'}")
+    if not use_absolute:
+        print(f"      Ready Pose    : ({', '.join([f'{r:.2f}' for r in ready_pose_rad])}) rad")
     print(f"      ROS 2 Topic   : {args.topic}")
     print("=================================================================")
     print("Waiting for vision tracking packets from arm_tracking.py...\n")
 
     last_print = time.time()
     packet_count = 0
+    q_human_start_deg = None
+    warmup_samples = []
 
     try:
         while rclpy.ok():
             try:
-                data, _ = sock.recvfrom(8192)
+                # Socket Buffer Drain: Clear all past buffered packets & keep ONLY the freshest frame
+                latest_data = None
+                while True:
+                    try:
+                        chunk, _ = sock.recvfrom(8192)
+                        latest_data = chunk
+                    except socket.error:
+                        break # Buffer fully drained!
+
+                if latest_data is None:
+                    time.sleep(0.001)
+                    continue
+
                 packet_count += 1
-                payload = json.loads(data.decode("utf-8"))
+                payload = json.loads(latest_data.decode("utf-8"))
 
                 # Extract raw 7-DoF joint angles in degrees safely
                 open_arm_dict = payload.get("open_arm_7dof") if isinstance(payload, dict) else None
                 if not isinstance(open_arm_dict, dict):
                     open_arm_dict = {}
+                
+                is_valid = open_arm_dict.get("is_valid", True)
                 q_raw_deg = open_arm_dict.get("joint_angles_deg", [0.0]*7)
                 if not isinstance(q_raw_deg, (list, tuple)) or len(q_raw_deg) < 7:
                     q_raw_deg = [0.0] * 7
 
+                q_raw_arr = np.array(q_raw_deg[:7], dtype=np.float64)
+
+                # Skip invalid frames or zero spikes when vision tracking drops
+                if not is_valid or np.all(np.abs(q_raw_arr) < 1e-4):
+                    continue
+
+                # 15-Frame Warm-up Average for Super-Stable Initial Human Pose Calibration
+                if q_human_start_deg is None:
+                    warmup_samples.append(q_raw_arr)
+                    if len(warmup_samples) < 15:
+                        print(f"\r[System] Calibrating Initial Human Pose ({len(warmup_samples)}/15)...", end="", flush=True)
+                        continue
+                    else:
+                        q_human_start_deg = np.mean(warmup_samples, axis=0)
+                        print(f"\n[System] Calibrated Initial Human Pose: [{', '.join([f'{q:+5.1f}°' for q in q_human_start_deg])}]")
+
+                if use_absolute:
+                    q_target_deg = q_raw_arr.copy()
+                else:
+                    # Relative Displacement Equation: q_robot = q_ready + (q_human - q_human_start)
+                    delta_q_deg = q_raw_arr - q_human_start_deg
+                    q_target_deg = ready_pose_deg + delta_q_deg
+
+                # Apply fine-tuning shoulder pitch height offset or sign inversion if requested
+                if args.flip_pitch:
+                    q_target_deg[1] = -q_target_deg[1]
+                if abs(args.pitch_offset) > 1e-4:
+                    q_target_deg[1] += args.pitch_offset
+
                 # Apply Geometric Fabric Safety & Smoothing Filter
-                q_safe_deg = safety_filter.filter(q_raw_deg)
+                q_safe_deg = safety_filter.filter(q_target_deg)
 
                 # Map active arm joints and set default 0.0 for all other URDF joints
                 joint_dict = {name: 0.0 for name in all_joint_names}
